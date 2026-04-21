@@ -153,9 +153,11 @@ static void absSub(std::vector<long long> &a, const std::vector<long long> &b) {
 }
 
 // ---------- NTT multiplication ----------
-static const unsigned long long MOD1 = 998244353ULL;   // primitive root 3
-static const unsigned long long MOD2 = 985661441ULL;   // primitive root 3
+static const unsigned long long MOD1 = 998244353ULL;   // 119*2^23+1, g=3
+static const unsigned long long MOD2 = 985661441ULL;   // 235*2^22+1, g=3
+static const unsigned long long MOD3 = 754974721ULL;   // 45*2^24+1,  g=11
 static const unsigned long long G = 3;
+static const unsigned long long G3 = 11;
 
 static unsigned long long pw(unsigned long long a, unsigned long long b,
                              unsigned long long m) {
@@ -170,7 +172,7 @@ static unsigned long long pw(unsigned long long a, unsigned long long b,
 }
 
 static void ntt(std::vector<unsigned long long> &a, bool inv,
-                unsigned long long mod) {
+                unsigned long long mod, unsigned long long g) {
   int n = (int)a.size();
   for (int i = 1, j = 0; i < n; ++i) {
     int bit = n >> 1;
@@ -179,17 +181,18 @@ static void ntt(std::vector<unsigned long long> &a, bool inv,
     if (i < j) std::swap(a[i], a[j]);
   }
   for (int len = 2; len <= n; len <<= 1) {
-    unsigned long long w = pw(G, (mod - 1) / len, mod);
+    unsigned long long w = pw(g, (mod - 1) / len, mod);
     if (inv) w = pw(w, mod - 2, mod);
+    int half = len >> 1;
+    std::vector<unsigned long long> roots(half);
+    roots[0] = 1;
+    for (int k = 1; k < half; ++k) roots[k] = roots[k - 1] * w % mod;
     for (int i = 0; i < n; i += len) {
-      unsigned long long cur = 1;
-      int half = len / 2;
       for (int j = 0; j < half; ++j) {
         unsigned long long u = a[i + j];
-        unsigned long long v = a[i + j + half] * cur % mod;
+        unsigned long long v = a[i + j + half] * roots[j] % mod;
         a[i + j] = (u + v) % mod;
         a[i + j + half] = (u + mod - v) % mod;
-        cur = cur * w % mod;
       }
     }
   }
@@ -231,78 +234,81 @@ static std::vector<long long> mulAbs(const std::vector<long long> &A,
     return C;
   }
 
-  // NTT: split each base-10^9 digit into 3 base-10^3 digits.
-  std::vector<unsigned long long> a, b;
-  a.reserve(na * 3);
-  b.reserve(nb * 3);
-  for (size_t i = 0; i < na; ++i) {
-    long long v = A[i];
-    a.push_back((unsigned long long)(v % 1000));
-    v /= 1000;
-    a.push_back((unsigned long long)(v % 1000));
-    v /= 1000;
-    a.push_back((unsigned long long)(v % 1000));
-  }
-  for (size_t i = 0; i < nb; ++i) {
-    long long v = B[i];
-    b.push_back((unsigned long long)(v % 1000));
-    v /= 1000;
-    b.push_back((unsigned long long)(v % 1000));
-    v /= 1000;
-    b.push_back((unsigned long long)(v % 1000));
-  }
-  size_t result_len = a.size() + b.size();
+  // NTT with base-10^9 digits directly; use 3 primes and CRT.
+  // Coefficients in convolution bounded by: digit^2 * n <= (10^9)^2 * n.
+  // For n up to 2^18, this is ~2^77. Three 30-bit primes give ~2^90 modulus via CRT — safe.
+  size_t result_len = na + nb;
   size_t n = 1;
   while (n < result_len) n <<= 1;
-  a.resize(n, 0);
-  b.resize(n, 0);
 
-  std::vector<unsigned long long> a1 = a, b1 = b, a2 = a, b2 = b;
-  ntt(a1, false, MOD1);
-  ntt(b1, false, MOD1);
+  std::vector<unsigned long long> fa(n, 0), fb(n, 0);
+  for (size_t i = 0; i < na; ++i) fa[i] = (unsigned long long)A[i];
+  for (size_t i = 0; i < nb; ++i) fb[i] = (unsigned long long)B[i];
+
+  // NTT mod MOD1
+  std::vector<unsigned long long> a1 = fa, b1 = fb;
+  ntt(a1, false, MOD1, G);
+  ntt(b1, false, MOD1, G);
   for (size_t i = 0; i < n; ++i) a1[i] = a1[i] * b1[i] % MOD1;
-  ntt(a1, true, MOD1);
+  ntt(a1, true, MOD1, G);
+  { std::vector<unsigned long long> tmp; tmp.swap(b1); }
 
-  ntt(a2, false, MOD2);
-  ntt(b2, false, MOD2);
+  // NTT mod MOD2
+  std::vector<unsigned long long> a2 = fa, b2 = fb;
+  ntt(a2, false, MOD2, G);
+  ntt(b2, false, MOD2, G);
   for (size_t i = 0; i < n; ++i) a2[i] = a2[i] * b2[i] % MOD2;
-  ntt(a2, true, MOD2);
+  ntt(a2, true, MOD2, G);
+  { std::vector<unsigned long long> tmp; tmp.swap(b2); }
 
-  // CRT combine
+  // NTT mod MOD3
+  std::vector<unsigned long long> a3 = std::move(fa);
+  std::vector<unsigned long long> b3 = std::move(fb);
+  ntt(a3, false, MOD3, G3);
+  ntt(b3, false, MOD3, G3);
+  for (size_t i = 0; i < n; ++i) a3[i] = a3[i] * b3[i] % MOD3;
+  ntt(a3, true, MOD3, G3);
+  { std::vector<unsigned long long> tmp; tmp.swap(b3); }
+
+  // CRT three primes.
+  // x mod MOD1 = r1; x mod MOD2 = r2; x mod MOD3 = r3.
+  // Step 1: combine r1, r2 => x12 mod MOD1*MOD2 using u64 (MOD1*MOD2 ~ 2^60).
+  // Step 2: combine (x12, r3) to get actual value in two 64-bit parts (hi, lo) or as 128-bit.
   unsigned long long inv_m1_m2 = pw(MOD1 % MOD2, MOD2 - 2, MOD2);
-  std::vector<unsigned long long> coeff(n);
+  unsigned long long m12_mod_m3 = MOD1 % MOD3 * (MOD2 % MOD3) % MOD3;
+  unsigned long long inv_m12_m3 = pw(m12_mod_m3, MOD3 - 2, MOD3);
+
+  // We carry into the digit array incrementally to avoid materializing huge coefficients.
+  // Each coefficient is at most ~ (10^9)^2 * n ~ 2^77. We keep running carry as __int128.
+  std::vector<long long> C;
+  C.reserve(result_len + 2);
+  __uint128_t carry = 0;
+  const __uint128_t BASE128 = (__uint128_t)BASE;
+
   for (size_t i = 0; i < n; ++i) {
     unsigned long long r1 = a1[i];
     unsigned long long r2 = a2[i];
-    unsigned long long diff = (r2 + MOD2 - r1 % MOD2) % MOD2;
-    unsigned long long k = diff * inv_m1_m2 % MOD2;
-    coeff[i] = r1 + MOD1 * k;
-  }
+    unsigned long long r3 = a3[i];
+    // x12 = r1 + MOD1 * k2, where k2 = (r2 - r1) * inv(MOD1) mod MOD2
+    unsigned long long k2 = (r2 + MOD2 - r1 % MOD2) % MOD2 * inv_m1_m2 % MOD2;
+    // x12 fits in u64 (< MOD1*MOD2 < 2^60)
+    unsigned long long x12 = r1 + MOD1 * k2;
+    // x = x12 + MOD1 * MOD2 * k3, where k3 = (r3 - x12 mod MOD3) * inv(MOD1*MOD2 mod MOD3) mod MOD3
+    unsigned long long x12_mod_m3 = x12 % MOD3;
+    unsigned long long k3 =
+        (r3 + MOD3 - x12_mod_m3) % MOD3 * inv_m12_m3 % MOD3;
+    // x = x12 + (MOD1*MOD2) * k3
+    // Compute as 128-bit
+    __uint128_t m12 = (__uint128_t)MOD1 * MOD2;
+    __uint128_t x = (__uint128_t)x12 + m12 * k3;
 
-  // Carry propagation in base 10^3, then regroup into base 10^9.
-  std::vector<unsigned long long> small(n + 32, 0);
-  unsigned long long carry = 0;
-  for (size_t i = 0; i < n; ++i) {
-    unsigned long long v = coeff[i] + carry;
-    small[i] = v % 1000;
-    carry = v / 1000;
+    __uint128_t v = x + carry;
+    C.push_back((long long)(v % BASE128));
+    carry = v / BASE128;
   }
-  size_t idx = n;
   while (carry) {
-    if (idx >= small.size()) small.push_back(0);
-    small[idx] = carry % 1000;
-    carry /= 1000;
-    ++idx;
-  }
-  size_t total = idx;
-  size_t groups = (total + 2) / 3;
-  if (groups == 0) groups = 1;
-  std::vector<long long> C(groups, 0);
-  for (size_t i = 0; i < total; ++i) {
-    size_t gi = i / 3;
-    size_t pos = i % 3;
-    long long mul = (pos == 0) ? 1 : (pos == 1 ? 1000 : 1000000);
-    C[gi] += (long long)small[i] * mul;
+    C.push_back((long long)(carry % BASE128));
+    carry /= BASE128;
   }
   trim(C);
   return C;
