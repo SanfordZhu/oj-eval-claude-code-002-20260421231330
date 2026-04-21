@@ -19,16 +19,20 @@
 
 namespace sjtu {
 class int2048 {
-  // todo
-public:
+ public:
+  // sign: 0 means non-negative (including zero), 1 means negative.
+  // digits are stored in base 10^9, little-endian (least significant first).
+  // Zero is represented as digits = {0}, sign = 0.
+  int sign;
+  std::vector<long long> digits;
+
+ public:
   // Constructors
   int2048();
   int2048(long long);
   int2048(const std::string &);
   int2048(const int2048 &);
 
-  // The parameter types of the following functions are for reference only, you can choose to use constant references or not
-  // If needed, you can add other required functions yourself
   // ===================================
   // Integer1
   // ===================================
@@ -82,6 +86,6 @@ public:
   friend bool operator<=(const int2048 &, const int2048 &);
   friend bool operator>=(const int2048 &, const int2048 &);
 };
-} // namespace sjtu
+}  // namespace sjtu
 
 #endif
